@@ -265,6 +265,12 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     /** open_on_start_network_wait, in ms; the boot's app while it waits for the network, and until when. */
     private long openOnStartWaitMs;
     private volatile Intent startPending;
+    /** power_on_input: the TV input Home switches to at power-on, empty when off; the window closes at this uptime. */
+    private String powerOnInput = "";
+    private long powerOnInputUntil;
+    /** Arms power_on_input when the screen turns on; null unless the key is set. */
+    private BroadcastReceiver powerOnInputReceiver;
+    private final Runnable powerOnInputSwitch = this::switchToPowerOnInput;
     private long startDeadline;
     /** Opens the boot's app once the network is validated (networkCallback posts this) or the wait is over. */
     private final Runnable openWhenOnline = new Runnable() {
@@ -453,6 +459,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         bootToLiveTv = cfg.bootToLiveTv;
         openOnStartChoice = cfg.openOnStartChoice;
         openOnStartWaitMs = cfg.openOnStartNetworkWait * 1000L;
+        powerOnInput = cfg.powerOnInput;
         liveTvAction = cfg.liveTvAction;
         liveTvInputId = cfg.liveTvInputId;
         appLibraryEnabled = cfg.appLibrary;
@@ -897,6 +904,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         } else {
             registerReceiver(packageReceiver, packageFilter);
         }
+        if (!powerOnInput.isEmpty()) armPowerOnInput();
 
         ConnectivityManager cm = getSystemService(ConnectivityManager.class);
         TvInputManager tim = (TvInputManager) getSystemService(TV_INPUT_SERVICE);
@@ -1040,6 +1048,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                 break;
         }
         if (openLiveTvAfterBoot()) return;
+        schedulePowerOnInput();
         updateGreeting();
         updatePanel();
         // The network and Inputs pills keep their state while Home is in the background, and callbacks update them
@@ -1234,6 +1243,9 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         handler.removeCallbacks(minuteTick);
         handler.removeCallbacks(openWhenOnline);
         startPending = null;   // leaving Home before the network came back: the boot's app stays closed
+        // Leaving Home closes the power-on window: coming back to Home later stays Home.
+        handler.removeCallbacks(powerOnInputSwitch);
+        powerOnInputUntil = 0;
         stopStats();
         if (gameDay != null) gameDay.stop();
         handler.removeCallbacks(turnTick);
@@ -1292,6 +1304,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         super.onDestroy();
         if (gameDay != null) gameDay.shutdown();
         unregisterReceiver(packageReceiver);
+        if (powerOnInputReceiver != null) unregisterReceiver(powerOnInputReceiver);
         wallpaperPlayer.close();
         ConnectivityManager cm = getSystemService(ConnectivityManager.class);
         TvInputManager tim = (TvInputManager) getSystemService(TV_INPUT_SERVICE);
@@ -1334,6 +1347,10 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
      */
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
+        if (powerOnInputUntil != 0) {   // a key first: the person is choosing, so Home stays Home
+            powerOnInputUntil = 0;
+            handler.removeCallbacks(powerOnInputSwitch);
+        }
         // Vendor keys (TCL Netflix button, 4062) never reach the key services, only the focused window.
         if (event.getKeyCode() >= 1000 && RemoteKeys.handle(this, event, homeAppKeys.get(event.getKeyCode()), null)) return true;
         if (handleSettingsKey(event)) return true;
@@ -3072,6 +3089,43 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         }
         open(i);
         return true;
+    }
+
+    /** power_on_input: how long after power-on Home still switches to the input, and how long it waits first, so a
+     *  firmware that resumes its last source by itself gets there before this does. */
+    static final long POWER_ON_INPUT_WINDOW_MS = 60 * 1000L;
+    static final long POWER_ON_INPUT_DELAY_MS = 1500L;
+    static final String POWER_ON_INPUT_BOOT_KEY = "power_on_input_boot";
+
+    /** power_on_input: open the window at the first Home of each boot (keyed on BOOT_COUNT, as boot_to_live_tv is,
+     *  so a recreate or a restarted process later on stays Home), and again whenever the screen turns on. */
+    private void armPowerOnInput() {
+        int boot = OpenOnStart.boot(this);
+        SharedPreferences prefs = getSharedPreferences(OpenOnStart.BOOT_PREFS, MODE_PRIVATE);
+        if (boot >= 0 && prefs.getInt(POWER_ON_INPUT_BOOT_KEY, -1) != boot
+                && prefs.edit().putInt(POWER_ON_INPUT_BOOT_KEY, boot).commit()) {
+            powerOnInputUntil = SystemClock.elapsedRealtime() + POWER_ON_INPUT_WINDOW_MS;
+        }
+        powerOnInputReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                powerOnInputUntil = SystemClock.elapsedRealtime() + POWER_ON_INPUT_WINDOW_MS;
+                schedulePowerOnInput();   // Home may have resumed before this broadcast arrived
+            }
+        };
+        registerReceiver(powerOnInputReceiver, new IntentFilter(Intent.ACTION_SCREEN_ON));
+    }
+
+    private void schedulePowerOnInput() {
+        if (!resumed || !OpenOnStart.inputDue(powerOnInput, powerOnInputUntil, SystemClock.elapsedRealtime())) return;
+        handler.removeCallbacks(powerOnInputSwitch);
+        handler.postDelayed(powerOnInputSwitch, POWER_ON_INPUT_DELAY_MS);
+    }
+
+    private void switchToPowerOnInput() {
+        if (!resumed || !OpenOnStart.inputDue(powerOnInput, powerOnInputUntil, SystemClock.elapsedRealtime())) return;
+        powerOnInputUntil = 0;
+        openInput(powerOnInput);
     }
 
     /** The Live TV app's launch intent: its leanback entry point, or the configured action if it has none. */

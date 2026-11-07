@@ -25,6 +25,12 @@ final class OpenOnStart {
         return boot >= 0 && boot != handledBoot && pkg != null && !pkg.isEmpty() && !pkg.equals(self);
     }
 
+    /** power_on_input: Home switches to that input while the power-on window is open and no key has been pressed.
+     *  {@code armedUntil} is an elapsedRealtime, 0 once a key, a switch or leaving Home has closed the window. */
+    static boolean inputDue(String inputId, long armedUntil, long now) {
+        return inputId != null && !inputId.isEmpty() && now < armedUntil;
+    }
+
     static int boot(Context ctx) {
         return Settings.Global.getInt(ctx.getContentResolver(), Settings.Global.BOOT_COUNT, -1);
     }

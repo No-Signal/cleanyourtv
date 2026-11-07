@@ -38,4 +38,20 @@ public class OpenOnStartTest {
         assertFalse(OpenOnStart.opensNow(false, 59_999, 60_000));
         assertTrue(OpenOnStart.opensNow(false, 60_000, 60_000));
     }
+
+    private static final String HDMI1 = "com.tcl.tvinput/.TvPassThroughService/HW15";
+
+    @Test public void powerOnInputSwitchesWhileTheWindowIsOpen() {
+        assertTrue(OpenOnStart.inputDue(HDMI1, 61_000, 2_000));
+    }
+
+    @Test public void powerOnInputStaysHomeOnceTheWindowCloses() {
+        assertFalse(OpenOnStart.inputDue(HDMI1, 61_000, 61_000));
+        assertFalse(OpenOnStart.inputDue(HDMI1, 0, 2_000));   // a key, a switch or leaving Home
+    }
+
+    @Test public void powerOnInputOffStaysHome() {
+        assertFalse(OpenOnStart.inputDue("", 61_000, 2_000));
+        assertFalse(OpenOnStart.inputDue(null, 61_000, 2_000));
+    }
 }
